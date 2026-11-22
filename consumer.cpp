@@ -1,120 +1,119 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <semaphore.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <semaphore.h>
 #include <sys/mman.h>
-#include <sys/stat.h>
 using namespace std;
 
-struct Slot {
-    char   name[11];
+struct Item {
+    char name[11];
     double price;
 };
 
-struct Header {
-    int head;
-    int tail;
+struct Info {
+    int in;
+    int out;
 };
 
-const int HOWMANY = 11;
-const char* goods[HOWMANY] = {
+const char* names[11] = {
     "ALUMINIUM", "COPPER", "COTTON", "CRUDEOIL", "GOLD", "LEAD",
     "MENTHAOIL", "NATURALGAS", "NICKEL", "SILVER", "ZINC"
 };
 
-const char* RED   = "\033[31m";
-const char* GREEN = "\033[32m";
-const char* CYAN  = "\033[36m";
-const char* RESET = "\033[0m";
+double price[11], lastPrice[11];
+double avg[11], lastAvg[11];
+double last5[11][5];
+int count[11];
 
-double last5[HOWMANY][5];
-int    seen[HOWMANY];
-double nowPrice[HOWMANY];
-double oldPrice[HOWMANY];
-double nowAvg[HOWMANY];
-double oldAvg[HOWMANY];
-
-// prints a number with color and arrow
-void showNumber(double value, double before, int count) {
-    const char* color = CYAN;
-    const char* arrow = " ";
-    if (count > 1) {
-        if (value > before)      { color = GREEN; arrow = "\u2191"; }
-        else if (value < before) { color = RED;   arrow = "\u2193"; }
-    }
-    printf("%s%7.2lf%s%s", color, value, arrow, RESET);
+void printValue(double now, double before) {
+    if (now > before)
+        printf("\033[32m%7.2lf\u2191\033[0m", now);
+    else if (now < before)
+        printf("\033[31m%7.2lf\u2193\033[0m", now);
+    else
+        printf("\033[34m%7.2lf \033[0m", now);
 }
 
-void drawTable() {
-    printf("\033[1;1H\033[2J");   // clear screen
-    printf("+-------------------------------------------+\n");
-    printf("| Currency     |    Price     |   AvgPrice  |\n");
-    printf("+-------------------------------------------+\n");
-    for (int i = 0; i < HOWMANY; i++) {
-        printf("| %-12s | ", goods[i]);
-        showNumber(nowPrice[i], oldPrice[i], seen[i]);
-        printf("     | ");
-        showNumber(nowAvg[i], oldAvg[i], seen[i]);
-        printf("    |\n");
+void showTable() {
+    printf("\e[1;1H\e[2J");
+    printf("+-------------------------------------+\n");
+    printf("| Commodity  |   Price   |  AvgPrice  |\n");
+    printf("+-------------------------------------+\n");
+
+    for (int i = 0; i < 11; i++) {
+        printf("| %-10s |  ", names[i]);
+        printValue(price[i], lastPrice[i]);
+        printf(" |  ");
+        printValue(avg[i], lastAvg[i]);
+        printf("  |\n");
     }
-    printf("+-------------------------------------------+\n");
+
+    printf("+-------------------------------------+\n");
     fflush(stdout);
 }
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {
-        fprintf(stderr, "usage: %s N\n", argv[0]);
+        printf("usage: ./consumer N\n");
         return 1;
     }
+
     int N = atoi(argv[1]);
 
-    // shared memory
-    size_t size = sizeof(Header) + N * sizeof(Slot);
+    // remove anything left from the last run
+    shm_unlink("/lab4_shm");
+    sem_unlink("/lab4_mutex");
+    sem_unlink("/lab4_empty");
+    sem_unlink("/lab4_full");
+
+    int size = sizeof(Info) + N * sizeof(Item);
     int fd = shm_open("/lab4_shm", O_CREAT | O_RDWR, 0666);
     ftruncate(fd, size);
     void* mem = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    Header* hdr  = (Header*)mem;
-    Slot*   ring = (Slot*)(hdr + 1);
+    close(fd);
 
-    // semaphores
-    sem_t* lock      = sem_open("/lab4_lock", O_CREAT, 0666, 1);
-    sem_t* freeSlots = sem_open("/lab4_free", O_CREAT, 0666, N);
-    sem_t* usedSlots = sem_open("/lab4_used", O_CREAT, 0666, 0);
+    Info* info = (Info*) mem;
+    Item* items = (Item*) (info + 1);
 
-    drawTable();
+    sem_t* mutex = sem_open("/lab4_mutex", O_CREAT, 0666, 1);
+    sem_t* empty = sem_open("/lab4_empty", O_CREAT, 0666, N);
+    sem_t* full  = sem_open("/lab4_full",  O_CREAT, 0666, 0);
+
+    showTable();
 
     while (true) {
-        sem_wait(usedSlots);
-        sem_wait(lock);
+        sem_wait(full);
+        sem_wait(mutex);
 
-        // critical section: take one item out
-        Slot item = ring[hdr->tail];
-        hdr->tail = (hdr->tail + 1) % N;
+        Item item = items[info->out];
+        info->out = (info->out + 1) % N;
 
-        sem_post(lock);
-        sem_post(freeSlots);
+        sem_post(mutex);
+        sem_post(empty);
 
-        // update the matching commodity
-        for (int i = 0; i < HOWMANY; i++) {
-            if (strcmp(item.name, goods[i]) == 0) {
-                oldPrice[i] = nowPrice[i];
-                oldAvg[i]   = nowAvg[i];
+        for (int i = 0; i < 11; i++) {
+            if (strcmp(item.name, names[i]) == 0) {
+                lastPrice[i] = price[i];
+                lastAvg[i] = avg[i];
+                price[i] = item.price;
 
-                nowPrice[i] = item.price;
-                last5[i][seen[i] % 5] = item.price;
-                seen[i]++;
+                last5[i][count[i] % 5] = item.price;
+                count[i]++;
 
-                // average of the last 5 readings (or fewer at the start)
-                int n = seen[i] < 5 ? seen[i] : 5;
+                int n = count[i];
+                if (n > 5) n = 5;
+
                 double sum = 0;
-                for (int k = 0; k < n; k++) sum += last5[i][k];
-                nowAvg[i] = sum / n;
-                break;
+                for (int k = 0; k < n; k++)
+                    sum += last5[i][k];
+                avg[i] = sum / n;
             }
         }
-        drawTable();
+
+        showTable();
     }
+
     return 0;
 }
