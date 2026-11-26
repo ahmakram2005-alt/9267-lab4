@@ -62,7 +62,7 @@ int main(int argc, char* argv[]) {
 
     int N = atoi(argv[1]);
 
-    // remove anything left from the last run
+    
     shm_unlink("/lab4_shm");
     sem_unlink("/lab4_mutex");
     sem_unlink("/lab4_empty");
