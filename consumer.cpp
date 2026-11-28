@@ -1,11 +1,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <strings.h>
+#include <csignal>
 #include <unistd.h>
 #include <fcntl.h>
 #include <semaphore.h>
 #include <sys/mman.h>
-using namespace std;
 
 struct Item {
     char name[11];
@@ -26,6 +27,12 @@ double price[11], lastPrice[11];
 double avg[11], lastAvg[11];
 double last5[11][5];
 int count[11];
+
+void* mem;
+int size;
+sem_t* mutex;
+sem_t* empty;
+sem_t* full;
 
 void printValue(double now, double before) {
     if (now > before)
@@ -54,6 +61,19 @@ void showTable() {
     fflush(stdout);
 }
 
+void cleanup(int sig) {
+    sem_close(mutex);
+    sem_close(empty);
+    sem_close(full);
+    munmap(mem, size);
+
+    shm_unlink("/lab4_shm");
+    sem_unlink("/lab4_mutex");
+    sem_unlink("/lab4_empty");
+    sem_unlink("/lab4_full");
+    exit(0);
+}
+
 int main(int argc, char* argv[]) {
     if (argc != 2) {
         printf("usage: ./consumer N\n");
@@ -62,24 +82,21 @@ int main(int argc, char* argv[]) {
 
     int N = atoi(argv[1]);
 
-    
-    shm_unlink("/lab4_shm");
-    sem_unlink("/lab4_mutex");
-    sem_unlink("/lab4_empty");
-    sem_unlink("/lab4_full");
-
-    int size = sizeof(Info) + N * sizeof(Item);
+    size = sizeof(Info) + N * sizeof(Item);
     int fd = shm_open("/lab4_shm", O_CREAT | O_RDWR, 0666);
     ftruncate(fd, size);
-    void* mem = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    mem = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
 
     Info* info = (Info*) mem;
     Item* items = (Item*) (info + 1);
 
-    sem_t* mutex = sem_open("/lab4_mutex", O_CREAT, 0666, 1);
-    sem_t* empty = sem_open("/lab4_empty", O_CREAT, 0666, N);
-    sem_t* full  = sem_open("/lab4_full",  O_CREAT, 0666, 0);
+    mutex = sem_open("/lab4_mutex", O_CREAT, 0666, 1);
+    empty = sem_open("/lab4_empty", O_CREAT, 0666, N);
+    full  = sem_open("/lab4_full",  O_CREAT, 0666, 0);
+
+    signal(SIGINT, cleanup);
+    signal(SIGTERM, cleanup);
 
     showTable();
 
@@ -94,7 +111,7 @@ int main(int argc, char* argv[]) {
         sem_post(empty);
 
         for (int i = 0; i < 11; i++) {
-            if (strcmp(item.name, names[i]) == 0) {
+            if (strcasecmp(item.name, names[i]) == 0) {
                 lastPrice[i] = price[i];
                 lastAvg[i] = avg[i];
                 price[i] = item.price;

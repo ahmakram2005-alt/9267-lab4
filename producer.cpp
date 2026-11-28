@@ -3,11 +3,11 @@
 #include <cstring>
 #include <ctime>
 #include <random>
+#include <csignal>
 #include <unistd.h>
 #include <fcntl.h>
 #include <semaphore.h>
 #include <sys/mman.h>
-using namespace std;
 
 struct Item {
     char name[11];
@@ -20,6 +20,11 @@ struct Info {
 };
 
 char* name;
+void* mem;
+int size;
+sem_t* mutex;
+sem_t* empty;
+sem_t* full;
 
 void printLog(const char* msg) {
     timespec ts;
@@ -29,6 +34,14 @@ void printLog(const char* msg) {
     char date[30];
     strftime(date, 30, "%m/%d/%Y %H:%M:%S", t);
     fprintf(stderr, "[%s.%03ld] %s: %s\n", date, ts.tv_nsec / 1000000, name, msg);
+}
+
+void cleanup(int sig) {
+    sem_close(mutex);
+    sem_close(empty);
+    sem_close(full);
+    munmap(mem, size);
+    exit(0);
 }
 
 int main(int argc, char* argv[]) {
@@ -43,22 +56,25 @@ int main(int argc, char* argv[]) {
     int T = atoi(argv[4]);
     int N = atoi(argv[5]);
 
-    int size = sizeof(Info) + N * sizeof(Item);
+    size = sizeof(Info) + N * sizeof(Item);
     int fd = shm_open("/lab4_shm", O_CREAT | O_RDWR, 0666);
     ftruncate(fd, size);
-    void* mem = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    mem = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
 
     Info* info = (Info*) mem;
     Item* items = (Item*) (info + 1);
 
-    sem_t* mutex = sem_open("/lab4_mutex", O_CREAT, 0666, 1);
-    sem_t* empty = sem_open("/lab4_empty", O_CREAT, 0666, N);
-    sem_t* full  = sem_open("/lab4_full",  O_CREAT, 0666, 0);
+    mutex = sem_open("/lab4_mutex", O_CREAT, 0666, 1);
+    empty = sem_open("/lab4_empty", O_CREAT, 0666, N);
+    full  = sem_open("/lab4_full",  O_CREAT, 0666, 0);
 
-    random_device rd;
-    default_random_engine gen(rd());
-    normal_distribution<double> dist(mean, sd);
+    signal(SIGINT, cleanup);
+    signal(SIGTERM, cleanup);
+
+    std::random_device rd;
+    std::default_random_engine gen(rd());
+    std::normal_distribution<double> dist(mean, sd);
 
     char msg[100];
 
